@@ -36,7 +36,7 @@ ui <- navbarPage(
   tabPanel("Visualización Geoespacial", visualizacionGeoespacialUI("visualizacion_geoespacial_ui")),
   tabPanel("Análisis Descriptivo", analisisDescriptivoUI("analisis_descriptivo_ui")),
   tabPanel("Inferencia Estadística", inferenciaEstadisticaUI("inferencia_estadistica_ui")),
-  tabPanel("Regresión y Modelos", regresionModelosUI("regresion_modelos_ui")),
+  tabPanel("Regresión logistica", regresionModelosUI("regresion_modelos_ui")),
   tabPanel("Análisis Multivariante", analisisMultivarianteUI("analisis_multivariante_ui"))
 )
 
@@ -78,13 +78,13 @@ server <- function(input, output, session) {
      carpeta_informe = carpeta_informe,
      categorias = categorias
    )
-  # 
-  # callModule(
-  #   regresionModelos,
-  #   "regresion_modelos_ui",
-  #   datos_completos = datos_completos,
-  #   listas_reactivas = listas_reactivas
-  # )
+  
+   callModule(
+     regresionModelos,
+     "regresion_modelos_ui",
+     datos_completos = datos_completos
+   )
+   
   # 
   # callModule(
   #   analisisMultivariante,

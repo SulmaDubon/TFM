@@ -1,7 +1,7 @@
-# Parte del UI
 inferenciaEstadisticaUI <- function(id) {
   ns <- NS(id)
   tagList(
+    # Selección de variables en la parte superior
     fluidRow(
       column(3,
              selectInput(
@@ -18,10 +18,11 @@ inferenciaEstadisticaUI <- function(id) {
              )
       ),
       column(6,
-             uiOutput(ns("radio_variables"))  
+             uiOutput(ns("radio_variables"))  # Variables independientes dinámicas
       )
     ),
     hr(),
+    # Resultados en la parte inferior
     fluidRow(
       column(12,
              navlistPanel(
@@ -29,14 +30,10 @@ inferenciaEstadisticaUI <- function(id) {
                         tableOutput(ns("fisher_resultados")),
                         actionButton(ns("agregar_a_lista"), "Agregar a Lista")
                ),
-               tabPanel("Intervalos de Confianza", 
-                        tableOutput(ns("intervalos_resultados")),
-                        actionButton(ns("agregar_intervalos"), "Agregar Intervalos a Lista")
-               )
+               tabPanel("Intervalos de Confianza", tableOutput(ns("intervalos_resultados")))
              )
       )
     ),
-    hr(),
     fluidRow(
       column(12,
              tableOutput(ns("tabla_resultados")), 
@@ -46,92 +43,129 @@ inferenciaEstadisticaUI <- function(id) {
   )
 }
 
-# Parte del Server
+
 inferenciaEstadistica <- function(input, output, session, datos_completos, categorias, carpeta_informe) {
   ns <- session$ns
   
-  # Estados reactivos para Fisher e Intervalos
-  resultados_fisher_lista <- reactiveVal(data.frame())
-  resultados_intervalos_lista <- reactiveVal(data.frame())
+  # Leyendas de variables dependientes
+  variables_leyendas <- list(
+    FamDiag = "Miembro de la familia ha sido diagnosticado",
+    FamHosp = "Miembro de la familia ha sido hospitalizado",
+    Caso_6m = "Caso registrado en los últimos 6 meses",
+    ZancViv = "Zancudos observados en el área de vivienda",
+    LarvViv = "Larvas observadas en el área de vivienda"
+  )
   
-  # Prueba de Fisher
+  # Actualizar opciones de selectores
+  observe({
+    req(categorias)
+    updateSelectInput(session, "variable_dependiente", choices = setNames(names(variables_leyendas), unlist(variables_leyendas)))
+    categorias_con_municipio <- c("Municipio" = "Municipio", categorias)
+    updateSelectInput(session, "categoria_seleccionada", choices = names(categorias_con_municipio))
+  })
+  
+  output$radio_variables <- renderUI({
+    req(input$categoria_seleccionada, categorias)
+    variables <- if (input$categoria_seleccionada == "Municipio") "Municipio" else categorias[[input$categoria_seleccionada]]
+    tags$div(
+      style = "column-count: 2; column-gap: 20px;",
+      radioButtons(
+        ns("variables_independientes"),
+        label = "variable independiete",
+        choices = variables,
+        selected = NULL
+      )
+    )
+  })
+  
+  # Función  para calcular la prueba de Fisher
   calcular_fisher <- function(datos, variable_dep, variable_indep) {
     tabla <- table(datos[[variable_dep]], datos[[variable_indep]])
-    if (nrow(tabla) != 2 || ncol(tabla) != 2) return(NULL)
-    fisher_result <- broom::tidy(fisher.test(tabla))
+    
+    # Validar que la tabla sea 2x2
+    if (nrow(tabla) != 2 || ncol(tabla) != 2) {
+      showNotification("La tabla de contingencia no es 2x2. La prueba de Fisher no puede ser realizada.", type = "error")
+      return(NULL)
+    }
+    
+    # Realizar la prueba si la tabla es válida
+    fisher_result <- fisher.test(tabla)
+    fisher_tidy <- broom::tidy(fisher_result)
+    
     data.frame(
       "Prueba" = "Prueba exacta de Fisher",
-      "Valor p" = fisher_result$p.value,
-      "Odds ratio" = fisher_result$estimate,
-      "IC Inferior" = fisher_result$conf.low,
-      "IC Superior" = fisher_result$conf.high
+      "Valor p" = fisher_tidy$p.value,
+      "Odds ratio" = fisher_tidy$estimate,
+      "IC Inferior" = fisher_tidy$conf.low,
+      "IC Superior" = fisher_tidy$conf.high
     )
   }
   
-  # Intervalos de Confianza
+  
   calcular_intervalos_confianza <- function(datos, variable) {
-    datos %>%
+    tabla <- datos %>%
       group_by(!!sym(variable)) %>%
       summarise(n = n(), .groups = "drop") %>%
       mutate(
         p = n / sum(n),
         IC_Lower = p - qnorm(0.975) * sqrt((p * (1 - p)) / sum(n)),
-        IC_Upper = p + qnorm(0.975) * sqrt((p * (1 - p)) / sum(n))
+        IC_Upper = p + qnorm(0.975) * sqrt((p * (1 - p)) / sum(n)),
+        Tamaño_muestra = ceiling((qnorm(0.975)^2 * p * (1 - p)) / 0.05^2)
       )
+    return(tabla)
   }
   
-  # Render para Fisher
+  # Salida para Fisher
   output$fisher_resultados <- renderTable({
     req(input$variable_dependiente, input$variables_independientes, datos_completos())
-    calcular_fisher(datos_completos(), input$variable_dependiente, input$variables_independientes)
+    fisher_result <- calcular_fisher(datos_completos(), input$variable_dependiente, input$variables_independientes)
+    
+    if (is.null(fisher_result)) {
+      return(data.frame("Error" = "No se puede calcular la prueba: la tabla no es 2x2."))
+    }
+    fisher_result
   })
   
-  # Render para Intervalos de Confianza
+  
+  # Salida para Intervalos de Confianza
   output$intervalos_resultados <- renderTable({
     req(input$variable_dependiente, datos_completos())
     calcular_intervalos_confianza(datos_completos(), input$variable_dependiente)
   })
   
-  # Evento para agregar resultados de Fisher
+  # Tabla reactiva para almacenar resultados
+  resultados_lista <- reactiveVal(data.frame())
+  
+  # Evento para agregar resultados a la lista
   observeEvent(input$agregar_a_lista, {
     req(input$variable_dependiente, input$variables_independientes, datos_completos())
+    
     fisher_result <- calcular_fisher(datos_completos(), input$variable_dependiente, input$variables_independientes)
-    if (is.null(fisher_result)) return()
+    
+    # Si no se puede realizar la prueba, no agregar resultados
+    if (is.null(fisher_result)) {
+      showNotification("No se puede agregar a la lista porque la tabla no es 2x2.", type = "error")
+      return()
+    }
+    
+    # Agregar resultado si la prueba es válida
     nuevo_resultado <- data.frame(
-      "Variable Dependiente" = input$variable_dependiente,
+      "Variable Dependiente" =  input$variable_dependiente,
       "Variable Independiente" = input$variables_independientes,
       fisher_result[2:5]
     )
-    resultados_fisher_lista(rbind(resultados_fisher_lista(), nuevo_resultado))
+    resultados_lista(rbind(resultados_lista(), nuevo_resultado))
   })
   
-  # Evento para agregar resultados de Intervalos
-  observeEvent(input$agregar_intervalos, {
-    req(input$variable_dependiente, datos_completos())
-    intervalos_result <- calcular_intervalos_confianza(datos_completos(), input$variable_dependiente)
-    if (is.null(intervalos_result)) return()
-    intervalos_result$Variable <- input$variable_dependiente
-    resultados_intervalos_lista(rbind(resultados_intervalos_lista(), intervalos_result))
-  })
-  
-  # Mostrar tabla dinámica según la pestaña activa
-  tabla_activa <- reactive({
-    if (input$agregar_a_lista || input$guardar_tabla) {
-      resultados_fisher_lista()
-    } else if (input$agregar_intervalos) {
-      resultados_intervalos_lista()
-    }
-  })
   
   output$tabla_resultados <- renderTable({
-    req(tabla_activa())
-    tabla_activa()
+    req(nrow(resultados_lista()) > 0)
+    resultados_lista()
   })
   
   output$guardar_tabla <- downloadHandler(
-    filename = function() paste("resultados_", Sys.Date(), ".csv", sep = ""),
-    content = function(file) {
-      write.csv(tabla_activa(), file, row.names = FALSE)
-    }
+    filename = function() paste("resultados_fisher", Sys.Date(), ".csv", sep = ""),
+    content = function(file) write.csv(resultados_lista(), file, row.names = FALSE)
   )
 }
+
